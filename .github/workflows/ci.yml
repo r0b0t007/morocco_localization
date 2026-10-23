@@ -6,24 +6,25 @@ on:
       - main
   pull_request:
 
+permissions:
+  contents: read
+
 concurrency:
-  group: main-morocco_localization-${{ github.event.number }}
+  group: ci-morocco_localization-${{ github.event.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
   tests:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-    name: Server
+    name: Server tests (version-16)
 
     services:
       redis-cache:
-        image: redis:alpine
+        image: redis:8-alpine
         ports:
           - 13000:6379
       redis-queue:
-        image: redis:alpine
+        image: redis:8-alpine
         ports:
           - 11000:6379
       mariadb:
@@ -32,16 +33,13 @@ jobs:
           MYSQL_ROOT_PASSWORD: root
         ports:
           - 3306:3306
-        options: --health-cmd="mariadb-admin ping" --health-interval=5s --health-timeout=2s --health-retries=3
+        options: --health-cmd="healthcheck.sh --connect --innodb_initialized" --health-interval=5s --health-timeout=2s --health-retries=10
 
     steps:
-      - name: Clone
+      - name: Checkout morocco_localization
         uses: actions/checkout@v6
-
-      - name: Find tests
-        run: |
-          echo "Finding tests"
-          grep -rn "def test" > /dev/null
+        with:
+          path: apps/morocco_localization
 
       - name: Setup Python
         uses: actions/setup-python@v6
@@ -52,51 +50,29 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: 24
-          check-latest: true
 
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/*requirements.txt', '**/pyproject.toml', '**/setup.py', '**/setup.cfg') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
-            ${{ runner.os }}-
-
-      - name: Get yarn cache directory path
-        id: yarn-cache-dir-path
-        run: 'echo "dir=$(yarn cache dir)" >> $GITHUB_OUTPUT'
-
-      - uses: actions/cache@v4
-        id: yarn-cache
-        with:
-          path: ${{ steps.yarn-cache-dir-path.outputs.dir }}
-          key: ${{ runner.os }}-yarn-${{ hashFiles('**/yarn.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-yarn-
-
-      - name: Install MariaDB Client
+      - name: Install MariaDB client
         run: |
-          sudo apt update
-          sudo apt-get install mariadb-client
+          sudo apt-get update
+          sudo apt-get install -y mariadb-client
 
-      - name: Setup
+      - name: Setup bench
         run: |
           pip install frappe-bench
-          bench init --skip-redis-config-generation --skip-assets --python "$(which python)" ~/frappe-bench
+          bench init --skip-redis-config-generation --skip-assets --frappe-branch version-16 --python "$(which python)" ~/frappe-bench
 
-      - name: Install
+      - name: Install apps
         working-directory: /home/runner/frappe-bench
         run: |
-          bench get-app morocco_localization $GITHUB_WORKSPACE
+          bench get-app --branch version-16 erpnext
+          bench get-app morocco_localization $GITHUB_WORKSPACE/apps/morocco_localization
           bench setup requirements --dev
-          bench new-site --db-root-password root --admin-password admin test_site
+          bench new-site --db-root-password root --admin-password admin --mariadb-user-host-login-scope='%' test_site
           bench --site test_site install-app morocco_localization
-          bench build
         env:
           CI: 'Yes'
 
-      - name: Run Tests
+      - name: Run tests
         working-directory: /home/runner/frappe-bench
         run: |
           bench --site test_site set-config allow_tests true
